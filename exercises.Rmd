@@ -1,0 +1,132 @@
+---
+title: "Classifying Weight Lifting Exercises"
+author: "Jesus Dacuma"
+date: "November 22, 2015"
+output: html_document
+---
+
+## Executive Summary
+
+Accelerometer data collected from a test subject lifting weights was used to create a predictive model that could classify whether the weight lifting exercise was performed correctly or not. The final model was trained using parameter-tuned Support Vector Machine and is estimated to be 98% accurate.
+
+
+## Introduction
+
+Personal activity monitors are trendy devices that help consumers quantify their movement, encouraging a lifestyle of health and fitness. Most monitors are designed to indicate how active the user is, quantifying how often he or she walks, runs or takes the stairs. That being said, monitors are not often designed to quantify if the user walking, running, or in general, exercising correctly or not.
+
+This data used in this project contains values from accelerometers attached to a user lifting weights. The goal of the project is to create a predictive model that accurately classifies how well the user performed the exercise.
+
+
+## Getting and Cleaning the Data
+
+The data for this project was collected from various accelerometers attached to a test subject performing bicep curls with a dumbbell. Each example is also classified using the `classe` variable; Class A describes a correctly-performed bicep curl, while all other classes (B through E) describe the various ways the exercise was incorrectly performed.
+
+The training data can be downloaded as shown below.
+
+```{r, message=FALSE}
+# Download File
+download.file("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+              destfile = "pml-training.csv")
+
+# Load Data
+data <- read.csv("pml-training.csv", header = TRUE)
+```
+
+### Splitting the Data for Cross-Validation
+
+To prevent overfitting, 25% of the training data is saved as a cross-validation set. Predicted models will be trained to the training set, but will be evaluated using a completely separate cross-validation set. 
+
+```{r, message=FALSE, warning=FALSE}
+# Create Training and Cross-Validation Sets
+set.seed(34)
+
+library(caret)
+inTrain <- createDataPartition(y = data$classe, p = 0.75, list = FALSE)
+
+training <- data[inTrain,]
+xval <- data[-inTrain,]
+```
+
+### Cleaning the Data
+
+The training set contains `r dim(training)[1]` examples with `r dim(training)[2]` features. However, due to how the accelerometer data was recorded, many of the training set columns have mostly missing values. Thus, the training set is cleaned up by removing columns with missing data, NA values and metadata that does not describe the exercise (participant names, timestamps, etc.).
+
+```{r}
+dim(training)
+
+# Remove columns with blank or NA values or metadata
+blankOrNA <- c(12:36, 50:59, 69:83, 87:101, 103:112, 125:139, 141:150)
+
+trainClean <- training[, -blankOrNA] 
+trainClean <- trainClean[, -c(1:7)]
+
+xvalClean <- xval[, -blankOrNA]
+xvalClean <- xvalClean[, -c(1:7)]
+```
+
+
+## Creating a Predictive Model
+
+We'll start by training the dataset using logistic regression, and then move on to more complex algorithms. To be usable by consumers, the model should be at least 90% accurate in classifying the exercises.
+
+### Multinomial Logistic Regression
+
+The most basic modeling approach to a classification problem is logistic regression. The first model tried here is a multinomial logistic regression for the five classes of exercises. A regression model is built using the `multinom` function from the neural networks `nnet` package, which can handle more than two classifiers in a regression model (the `glm` package only works for binomial logistic regression).
+
+```{r, cache=TRUE, message=FALSE, warning=FALSE}
+# Multinomial Logistic Regression
+library(nnet)
+
+multiFit <- multinom(classe ~ ., data = trainClean)
+confusionMatrix(xval$classe, predict(multiFit, newdata = xvalClean))
+```
+
+As shown in the confusion matrix, the accuracy of the regression model is only 67.8%, which leaves some room for improvement. The model included all features, so some feature selection may improve the model; however, feature selection alone may not increase the regression model accuracy to greater than 90%.
+
+### Support Vector Machines
+
+Another model to try is a Support Vector Machine model, which uses the `svm` function of the `e1071` package. Similar to regression models, Support Vector Machine models create a linear decision boundary to classify the data, but SVM models tend to be very robust as the linear decision boundaries chosen by the model maximize the separation between the classes.
+
+Below, the data is fit to a Support Vector Machine model, using the default parameters.
+
+```{r, cache=TRUE, warning=FALSE}
+# Support Vector Machines
+library(e1071)
+
+SVMfit <- svm(classe ~ ., data = trainClean)
+confusionMatrix(xval$classe, predict(SVMfit, newdata = xvalClean))
+```
+
+Just by using a the SVM algorithm, our predictive model accuracy has increased to 94.7%! In practice, an SVM model must be tuned for the best results. Support Vector Machines require certain paramaters defined, including the `gamma` and `cost`. The `gamma` parameter controls the bias-variance tradeoff of the model, and the `cost` parameter controls the penalty for overfitting.
+
+The best way to "tune" these parameters is to use a grid-search, where certain values of the parameters are defined, and the `tune` function cross-validates the many SVM models that use the different combinations of the defined parameters.
+
+```{r, cache=TRUE}
+# Find tuning parameters for SVM Model
+tuneSVM <- tune(svm, classe ~ ., data = trainClean,
+                validation.x = xvalClean,
+                ranges = list(gamma = 2^(-4:4), cost = 2^(-3:3)),
+                tunecontrol = tune.control(sampling = "fix"))
+
+tuneSVM
+```
+
+Using a grid-search, the values for the `gamma` and `cost` parameters that give the best accuracy are `r tuneSVM$best.model$gamma` and `r tuneSVM$best.model$cost`, respectively.
+
+We can now use these values in a new Support Vector Machine model to find the best possible accuracy.
+
+```{r, cache=TRUE}
+# SVM Model with tuning parameters
+SVMfit <- svm(classe ~ ., data = trainClean,
+              gamma = tuneSVM$best.model$gamma, 
+              cost = tuneSVM$best.model$cost)
+
+confusionMatrix(xval$classe, predict(SVMfit, newdata = xvalClean))
+```
+
+With a tuned SVM model, our accuracy has increased to `r round(100 * (1 - tuneSVM$best.performance), 2)`%! For this project, we can consider this model as acceptable for testing.
+
+
+## Evaluating the Predictive Model
+
+Splitting the original training data into a training subset and a cross-validation set helped in preventing model overfitting, as each model was cross-validated with another dataset that did not include any of the original training examples. However, the final model was chosen based on which had the best (lowest) cross-validation error. Thus, our cross-validation error is still biased, and the out-of-sample accuracy of the model when tested against an independent test set is very likely to be slightly lower. According to the confusion matrix, the low end of the 95% confidence interval of the model accuracy is 98.96%. Thus, 98% would be a reasonable estimation of the final model's true accuracy.
